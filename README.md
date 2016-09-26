@@ -16,5 +16,5 @@ git clone --recursive https://github.com/DuIslingr/ldid.git
 cd ldid
 ./makelinux.sh
 cp -i ldid $THEOS/toolchain/linux/iphone/bin/ldid
-chmod 755 $THEOS/toolchain/linux/iphone/bin/ldid
+chmod 755 $THEOS/toolchain/linux/iphone/bin
 ```
