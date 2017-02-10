@@ -982,6 +982,34 @@ class Map {
 
 namespace ldid {
 
+std::string Analyze(const void *data, size_t size) {
+    std::string entitlements;
+
+    FatHeader fat_header(const_cast<void *>(data), size);
+    _foreach (mach_header, fat_header.GetMachHeaders())
+        _foreach (load_command, mach_header.GetLoadCommands())
+            if (mach_header.Swap(load_command->cmd) == LC_CODE_SIGNATURE) {
+                auto signature(reinterpret_cast<struct linkedit_data_command *>(load_command));
+                auto offset(mach_header.Swap(signature->dataoff));
+                auto pointer(reinterpret_cast<uint8_t *>(mach_header.GetBase()) + offset);
+                auto super(reinterpret_cast<struct SuperBlob *>(pointer));
+
+                for (size_t index(0); index != Swap(super->count); ++index)
+                    if (Swap(super->index[index].type) == CSSLOT_ENTITLEMENTS) {
+                        auto begin(Swap(super->index[index].offset));
+                        auto blob(reinterpret_cast<struct Blob *>(pointer + begin));
+                        auto writ(Swap(blob->length) - sizeof(*blob));
+
+                        if (entitlements.empty())
+                            entitlements.assign(reinterpret_cast<char *>(blob + 1), writ);
+                        else
+                            _assert(entitlements.compare(0, entitlements.size(), reinterpret_cast<char *>(blob + 1), writ) == 0);
+                    }
+            }
+
+    return entitlements;
+}
+
 static void Allocate(const void *idata, size_t isize, std::streambuf &output, const Functor<size_t (const MachHeader &, size_t)> &allocate, const Functor<size_t (const MachHeader &, std::streambuf &output, size_t, const std::string &, const char *)> &save) {
     FatHeader source(const_cast<void *>(idata), isize);
 
@@ -1353,6 +1381,11 @@ class NullBuffer :
     }
 };
 
+class Digest {
+  public:
+    uint8_t sha1_[LDID_SHA1_DIGEST_LENGTH];
+};
+
 class Hash {
   public:
     char sha1_[LDID_SHA1_DIGEST_LENGTH];
@@ -1624,14 +1657,14 @@ std::vector<char> Sign(const void *idata, size_t isize, std::streambuf &output, 
             if (!team.empty())
                 put(data, team.c_str(), team.size() + 1);
 
-            uint8_t storage[special + normal][LDID_SHA1_DIGEST_LENGTH];
-            uint8_t (*hashes)[LDID_SHA1_DIGEST_LENGTH] = storage + special;
+            std::vector<Digest> storage(special + normal);
+            auto *hashes(&storage[special]);
 
-            memset(storage, 0, sizeof(*storage) * special);
+            memset(storage.data(), 0, sizeof(Digest) * special);
 
             _foreach (blob, blobs) {
                 auto local(reinterpret_cast<const Blob *>(&blob.second[0]));
-                sha1((uint8_t *) (hashes - blob.first), local, Swap(local->length));
+                sha1((hashes - blob.first)->sha1_, local, Swap(local->length));
             }
 
             _foreach (slot, posts) {
@@ -1641,11 +1674,11 @@ std::vector<char> Sign(const void *idata, size_t isize, std::streambuf &output, 
 
             if (normal != 1)
                 for (size_t i = 0; i != normal - 1; ++i)
-                    sha1(hashes[i], (PageSize_ * i < overlap.size() ? overlap.data() : top) + PageSize_ * i, PageSize_);
+                    sha1(hashes[i].sha1_, (PageSize_ * i < overlap.size() ? overlap.data() : top) + PageSize_ * i, PageSize_);
             if (normal != 0)
-                sha1(hashes[normal - 1], top + PageSize_ * (normal - 1), ((limit - 1) % PageSize_) + 1);
+                sha1(hashes[normal - 1].sha1_, top + PageSize_ * (normal - 1), ((limit - 1) % PageSize_) + 1);
 
-            put(data, storage, sizeof(storage));
+            put(data, storage.data(), sizeof(Digest) * storage.size());
 
             const auto &save(insert(blobs, CSSLOT_CODEDIRECTORY, CSMAGIC_CODEDIRECTORY, data));
             sha1(hash, save.data(), save.size());
@@ -2019,7 +2052,9 @@ static std::vector<char> Sign(const uint8_t *prefix, size_t size, std::streambuf
     // XXX: this is a miserable fail
     std::stringbuf temp;
     put(temp, prefix, size);
-    copy(buffer, temp);
+    size += copy(buffer, temp);
+    // XXX: this is a stupid hack
+    pad(temp, 0x10 - (size & 0xf));
     auto data(temp.str());
 
     HashProxy proxy(hash, save);
