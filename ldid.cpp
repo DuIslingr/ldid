@@ -123,7 +123,7 @@
     for (auto success : (long[]) {EINTR, __VA_ARGS__}) \
         if (error == success) \
             return (decltype(expr)) -success; \
-    _assert_(false, "errno=%u", error); \
+    _assert_(false, "errno=%u (\"%s\")", error, strerror(error)); \
 } }()
 
 #define _trace() \
